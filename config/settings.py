@@ -10,9 +10,8 @@ from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
 
+from config.paths import application_dir, data_dir
 from core.hotkey import HOTKEY, parse_hotkey
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -43,8 +42,8 @@ class Settings:
 
 class SettingsStore:
     def __init__(self, path: Path | None = None, env_path: Path | None = None) -> None:
-        self.path = path or Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "SelectionCopilot" / "settings.json"
-        self.env_path = env_path or PROJECT_ROOT / ".env"
+        self.path = path or data_dir() / "settings.json"
+        self.env_path = env_path or application_dir() / ".env"
 
     def defaults(self) -> Settings:
         values = {**dotenv_values(self.env_path), **os.environ}

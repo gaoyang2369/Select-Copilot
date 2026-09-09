@@ -11,6 +11,7 @@ from collections.abc import Callable
 import httpx
 from dotenv import load_dotenv
 
+from config.paths import application_dir
 from services.completion import CompletionError, TextCallback, complete
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ class Translator:
         client_factory: Callable[..., httpx.AsyncClient] = httpx.AsyncClient,
         *, thinking: str | None = None, stream: bool | None = None,
     ) -> None:
-        load_dotenv()
+        load_dotenv(application_dir() / ".env")
         self._base_url = os.getenv("BASE_URL", "") if base_url is None else base_url
         self._api_key = os.getenv("API_KEY", "") if api_key is None else api_key
         self._model = os.getenv("MODEL", "") if model is None else model

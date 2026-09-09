@@ -3,18 +3,20 @@ from __future__ import annotations
 
 import logging
 import signal
+import sys
 import threading
 from dataclasses import dataclass, replace
 
 import keyboard
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
-from PySide6.QtWidgets import QApplication, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
 from config.settings import Settings, SettingsStore
 from core.clipboard import ClipboardService
 from core.hotkey import GlobalHotkey
 from core.mouse import Drag, MouseSelectionListener
 from core.selection import SelectionService
+from core.runtime import SingleInstance, configure_logging
 from services.llm import LLMService
 from services.translator import Translator
 from ui.settings_dialog import SettingsDialog
@@ -89,7 +91,7 @@ class CopilotController(QObject):
                 self._startup_error += f"\n{error}"
         self._update_tray()
         self.tray.show()
-        if self._startup_error or not QSystemTrayIcon.isSystemTrayAvailable():
+        if self._startup_error or not all((self.settings.base_url, self.settings.api_key, self.settings.model)) or not QSystemTrayIcon.isSystemTrayAvailable():
             QTimer.singleShot(0, self.open_settings)
 
     def _update_tray(self) -> None:
@@ -227,28 +229,55 @@ class CopilotController(QObject):
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     application = QApplication([])
+    application.setApplicationName("SelectionCopilot")
     application.setQuitOnLastWindowClosed(False)
-    controller = CopilotController(application)
+    instance = SingleInstance(parent=application)
+    if not instance.start("quit" if "--quit" in sys.argv else "show"):
+        return
+    controller = None
     signal_timer = QTimer(application)
     signal_timer.timeout.connect(lambda: None)
     signal_timer.start(100)
-    application.aboutToQuit.connect(controller.shutdown)
     previous_handlers = {}
     try:
+        configure_logging()
+        controller = CopilotController(application)
+        application.setWindowIcon(controller.tray.icon())
+        application.aboutToQuit.connect(controller.shutdown)
+        instance.requested.connect(lambda command: application.quit() if command == "quit" else controller.open_settings())
         for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGBREAK):
             previous_handlers[signum] = signal.signal(signum, lambda *_: application.quit())
         controller.start()
-        print(f"Selection Copilot is running. Hotkey: {controller.settings.hotkey}. Settings and Exit are in the system tray. Ctrl+C exits.", flush=True)
+        if "--settings" in sys.argv:
+            QTimer.singleShot(0, controller.open_settings)
+        logger.info("Selection Copilot started. Hotkey: %s; automatic selection: %s", controller.settings.hotkey, controller.settings.auto_select)
+        if sys.stdout is not None:
+            print(f"Selection Copilot is running. Hotkey: {controller.settings.hotkey}. Settings and Exit are in the system tray. Ctrl+C exits.", flush=True)
         application.exec()
     finally:
         signal_timer.stop()
-        controller.shutdown()
+        if controller is not None:
+            controller.shutdown()
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
-    print("Selection Copilot stopped.", flush=True)
+        instance.close()
+        logger.info("Selection Copilot stopped.")
+        logging.shutdown()
+    if sys.stdout is not None:
+        print("Selection Copilot stopped.", flush=True)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+        if not logging.getLogger().handlers:
+            try:
+                configure_logging()
+            except OSError:
+                pass  # Still display the error if the user data directory is unwritable.
+        logger.exception("Application startup or shutdown failed")
+        if QApplication.instance() is not None:
+            QMessageBox.critical(None, "Selection Copilot", f"启动或退出失败：{error}\n\n日志位置：%LOCALAPPDATA%/SelectionCopilot/logs/app.log")
+        sys.exit(1)
