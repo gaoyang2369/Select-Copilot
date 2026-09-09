@@ -29,14 +29,15 @@ class Translator:
         api_key: str | None = None,
         model: str | None = None,
         client_factory: Callable[..., httpx.AsyncClient] = httpx.AsyncClient,
+        *, thinking: str | None = None, stream: bool | None = None,
     ) -> None:
         load_dotenv()
         self._base_url = os.getenv("BASE_URL", "") if base_url is None else base_url
         self._api_key = os.getenv("API_KEY", "") if api_key is None else api_key
         self._model = os.getenv("MODEL", "") if model is None else model
         self._client_factory = client_factory
-        self._thinking = os.getenv("DEEPSEEK_TRANSLATION_THINKING", "disabled").lower()
-        self._stream = os.getenv("LLM_STREAM", "true").lower() != "false"
+        self._thinking = os.getenv("DEEPSEEK_TRANSLATION_THINKING", "disabled").lower() if thinking is None else thinking
+        self._stream = (os.getenv("LLM_STREAM", "true").lower() != "false") if stream is None else stream
         self._cache: OrderedDict[tuple[str, str], str] = OrderedDict()
         self._cache_lock = threading.Lock()
 

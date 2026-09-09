@@ -23,9 +23,19 @@ class GlobalHotkeyTests(unittest.TestCase):
     def test_registration_failure_is_reported(self) -> None:
         self.api.RegisterHotKey.return_value = False
         with patch('core.hotkey.QCoreApplication') as application:
-            with self.assertRaisesRegex(RuntimeError, 'Cannot register ctrl\\+alt\\+space'):
+            with self.assertRaisesRegex(RuntimeError, 'Cannot register alt\\+q'):
                 self.hotkey.start()
             application.instance.return_value.installNativeEventFilter.assert_not_called()
+
+    def test_default_registers_alt_q_and_waits_for_q_release(self) -> None:
+        with patch('core.hotkey.QCoreApplication'):
+            self.hotkey.start()
+        self.api.RegisterHotKey.assert_called_once_with(None, _HOTKEY_ID, 0x4001, ord('Q'))
+        self.api.GetAsyncKeyState.side_effect = lambda key: 0x8000 if key == ord('Q') else 0
+        with patch('core.hotkey.time.monotonic', side_effect=[0, 3]):
+            with self.assertLogs('core.hotkey', level='WARNING'):
+                self.hotkey._run_after_hotkey_release()
+        self.callback.assert_not_called()
 
     def test_native_hotkey_message_runs_callback_off_gui_thread(self) -> None:
         calls = []
@@ -56,7 +66,7 @@ class GlobalHotkeyTests(unittest.TestCase):
         self.callback.assert_not_called()
 
     def test_waits_longer_than_old_timeout_then_copies_after_release(self) -> None:
-        self.api.GetAsyncKeyState.side_effect = [0x8000, 0x8000] + [0] * 6
+        self.api.GetAsyncKeyState.side_effect = [0x8000, 0x8000] + [0] * 7
         with patch('core.hotkey.time.monotonic', side_effect=[0, 0.1, 0.4]):
             self.hotkey._run_after_hotkey_release()
         self.callback.assert_called_once()
@@ -89,3 +99,21 @@ class GlobalHotkeyTests(unittest.TestCase):
         with self.assertLogs('core.hotkey', level='ERROR') as logs:
             self.hotkey._run_after_hotkey_release()
         self.assertIn('copy failed', '\n'.join(logs.output))
+
+    def test_conflicting_reconfiguration_preserves_old_registration(self) -> None:
+        self.hotkey._registered = True
+        self.api.RegisterHotKey.return_value = False
+        with self.assertRaises(RuntimeError):
+            self.hotkey.reconfigure("ctrl+shift+f9")
+        self.api.UnregisterHotKey.assert_not_called()
+        self.assertEqual(self.hotkey.hotkey, "alt+q")
+        self.assertEqual(self.hotkey._hotkey_id, _HOTKEY_ID)
+
+    def test_reconfiguration_registers_new_before_releasing_old(self) -> None:
+        self.hotkey._registered = True
+        self.hotkey.reconfigure("ctrl+shift+f9")
+        calls = self.api.mock_calls
+        self.assertEqual(calls[0][0], "RegisterHotKey")
+        self.assertEqual(calls[1][0], "UnregisterHotKey")
+        self.assertEqual(self.hotkey._hotkey_id, _HOTKEY_ID + 1)
+        self.assertEqual(self.hotkey.hotkey, "ctrl+shift+f9")

@@ -119,6 +119,15 @@ class FloatingToolbar(QWidget):
         self.raise_()
         self._dismiss_timer.start()
 
+    def set_services(self, translator: Translator, llm_service: LLMService) -> None:
+        """Apply settings to new actions; existing chat windows keep their service."""
+        self.hide()
+        for worker in (self._translation_worker, self._llm_worker):
+            if worker is not None:
+                worker.cancel()
+        self._translator = translator
+        self._llm_service = llm_service
+
     def _check_dismissal(self) -> None:
         left_down = bool(self._key_state(0x01) & 0x8000)
         clicked = left_down and not self._left_button_down

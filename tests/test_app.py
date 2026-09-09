@@ -31,7 +31,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
                 timer.timeout.connect(lambda: signal.raise_signal(signal.SIGINT))
                 timers.append(timer)
                 timer.start(100)
-            with patch('app.GlobalHotkey') as hotkey, patch('app.FloatingToolbar') as toolbar:
+            with patch('app.GlobalHotkey') as hotkey, patch('app.FloatingToolbar') as toolbar, patch('app.MouseSelectionListener'), patch('app.CopilotTray'):
                 hotkey.return_value.start.side_effect = start
                 app.main()
                 assert hotkey.return_value.stop.called
