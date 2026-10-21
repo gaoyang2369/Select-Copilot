@@ -40,6 +40,11 @@ class Handler(BaseHTTPRequestHandler):
 server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 
+def result_text(popup):
+    # QTextBrowser exposes a read-only Text control and the UIA Text pattern.
+    control = popup.child_window(title='结果正文', control_type='Text').wrapper_object()
+    return control.iface_text.DocumentRange.GetText(-1).rstrip('\r\n')
+
 def verify_actions(ui, directory):
     code = "from PySide6.QtWidgets import QApplication, QLineEdit, QWidget, QVBoxLayout; from PySide6.QtCore import QTimer; a=QApplication([]); w=QWidget(); e=QLineEdit('Hello'); QVBoxLayout(w).addWidget(e); w.setWindowTitle('Selection Copilot smoke source'); w.resize(400,80); w.show(); e.selectAll(); e.setFocus(); QTimer.singleShot(30000,a.quit); a.exec()"
     helper = subprocess.Popen([sys.executable, '-c', code], cwd=directory, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -52,12 +57,12 @@ def verify_actions(ui, directory):
         source.type_keys('^+{F12}')
         toolbar = ui.window(auto_id='QApplication.floatingToolbar')
         toolbar.wait('visible', timeout=10)
-        toolbar.child_window(title='译', control_type='Button').invoke()
+        toolbar.child_window(title='翻译', control_type='Button').invoke()
         popup = ui.window(auto_id='QApplication.translationPopup')
         popup.wait('visible', timeout=10)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            result = popup.descendants(control_type='Edit')[0].get_value()
+            result = result_text(popup)
             if result == '打包测试通过':
                 break
             time.sleep(0.1)
@@ -67,7 +72,7 @@ def verify_actions(ui, directory):
         toolbar.child_window(title='解释', control_type='Button').invoke()
         time.sleep(1)
         assert len(Handler.requests) == 2, 'Explanation did not send a request'
-        assert popup.descendants(control_type='Edit')[0].get_value() == '打包测试通过'
+        assert result_text(popup) == '打包测试通过'
         print('EXE_EXPLANATION_OK', flush=True)
         speech = toolbar.descendants(control_type='Button')[1]
         speech.invoke()
@@ -76,8 +81,8 @@ def verify_actions(ui, directory):
         while not speech.is_enabled() and time.monotonic() < deadline:
             time.sleep(0.2)
         assert speech.is_enabled(), 'Speech did not finish'
-        result = popup.descendants(control_type='Edit')[0].get_value()
-        assert 'TTS failed' not in result, result
+        result = result_text(popup)
+        assert '朗读失败' not in result, result
         print('EXE_SAPI_SPEECH_OK', flush=True)
     finally:
         if sys.exc_info()[0] is not None:

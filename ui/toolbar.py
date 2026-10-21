@@ -5,14 +5,15 @@ from __future__ import annotations
 import ctypes
 
 from PySide6.QtCore import QPoint, QThread, QTimer, Qt, Signal, Slot
-from PySide6.QtGui import QCursor, QGuiApplication, QKeyEvent
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QPushButton, QWidget
+from PySide6.QtGui import QCursor, QKeyEvent
+from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QPushButton
 
 from services.llm import LLMService
 from services.prompts import build_quick_ask_prompt
 from services.translator import Translator
 from services.tts import TTSService
 from ui.chat_window import ChatWindow
+from ui.theme import apply_theme, available_geometry, bounded_position
 from ui.translation_popup import TranslationPopup
 from ui.workers import AsyncTextWorker
 
@@ -34,7 +35,7 @@ class TTSWorker(QThread):
             self.failed.emit(str(error))
 
 
-class FloatingToolbar(QWidget):
+class FloatingToolbar(QFrame):
     """Display actions for the currently selected text."""
 
     _OFFSET = 12
@@ -75,29 +76,28 @@ class FloatingToolbar(QWidget):
         self._dismiss_timer.setInterval(50)
         self._dismiss_timer.timeout.connect(self._check_dismissal)
         self.setObjectName("floatingToolbar")
-        self.setStyleSheet(
-            "#floatingToolbar { background: #252525; border-radius: 8px; }"
-            "QPushButton { color: white; background: transparent; border: 0;"
-            " padding: 6px 10px; border-radius: 5px; }"
-            "QPushButton:hover { background: #404040; }"
-        )
+        apply_theme(self)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(2)
-        self._translate_button = QPushButton("译", self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
+        self._translate_button = QPushButton("翻译", self)
+        self._translate_button.setToolTip("将选中文字翻译为中文")
         self._translate_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._translate_button.clicked.connect(self._start_translation)
         layout.addWidget(self._translate_button)
-        self._tts_button = QPushButton("🔊", self)
+        self._tts_button = QPushButton("朗读", self)
+        self._tts_button.setToolTip("使用本机语音朗读选中文字")
         self._tts_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._tts_button.clicked.connect(self._start_tts)
         layout.addWidget(self._tts_button)
         self._explain_button = QPushButton("解释", self)
+        self._explain_button.setToolTip("解释选中的词句、概念或代码")
         self._explain_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._explain_button.clicked.connect(self._start_explanation)
         layout.addWidget(self._explain_button)
         self._chat_button = QPushButton("Chat", self)
+        self._chat_button.setToolTip("围绕选中文字继续追问")
         self._chat_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._chat_button.clicked.connect(self._open_chat)
         layout.addWidget(self._chat_button)
@@ -193,7 +193,8 @@ class FloatingToolbar(QWidget):
         source_text = self.selected_text
         self._translation_source = source_text
         self._translate_button.setEnabled(False)
-        self._translation_popup.show_message("Translating...", self)
+        self._translation_popup.set_heading("翻译")
+        self._translation_popup.show_message("正在翻译…", self)
         worker = AsyncTextWorker(streaming_operation=lambda emit: self._translator.translate(source_text, on_delta=emit))
         self._translation_worker = worker
         self._result_worker = worker
@@ -213,7 +214,8 @@ class FloatingToolbar(QWidget):
         source_text = self.selected_text
         self._explanation_source = source_text
         self._explain_button.setEnabled(False)
-        self._translation_popup.show_message("Explaining...", self)
+        self._translation_popup.set_heading("解释")
+        self._translation_popup.show_message("正在解释…", self)
         prompt = build_quick_ask_prompt(source_text)
         worker = AsyncTextWorker(streaming_operation=lambda emit: self._llm_service.ask(prompt, on_delta=emit))
         self._llm_worker = worker
@@ -270,12 +272,12 @@ class FloatingToolbar(QWidget):
     def _show_translation(self, result: str) -> None:
         if self._accept_result():
             self._result_worker.mark_displayed()
-            self._translation_popup.show_message(result, self)
+            self._translation_popup.show_message(result, self, markdown=True)
 
     @Slot(str)
     def _show_translation_error(self, error: str) -> None:
         if self._accept_result():
-            self._translation_popup.show_message(f"Translation failed: {error}", self)
+            self._translation_popup.show_message(f"翻译失败：{error}", self)
 
     @Slot()
     def _finish_translation(self) -> None:
@@ -289,12 +291,12 @@ class FloatingToolbar(QWidget):
     def _show_explanation(self, result: str) -> None:
         if self._accept_result():
             self._result_worker.mark_displayed()
-            self._translation_popup.show_message(result, self)
+            self._translation_popup.show_message(result, self, markdown=True)
 
     @Slot(str)
     def _show_explanation_error(self, error: str) -> None:
         if self._accept_result():
-            self._translation_popup.show_message(f"Explanation failed: {error}", self)
+            self._translation_popup.show_message(f"解释失败：{error}", self)
 
     @Slot()
     def _finish_explanation(self) -> None:
@@ -308,7 +310,8 @@ class FloatingToolbar(QWidget):
     def _show_tts_error(self, error: str) -> None:
         if self.isVisible():
             self._result_worker = None
-            self._translation_popup.show_message(f"TTS failed: {error}", self)
+            self._translation_popup.set_heading("朗读")
+            self._translation_popup.show_message(f"朗读失败：{error}", self)
 
     @Slot()
     def _finish_tts(self) -> None:
@@ -320,11 +323,7 @@ class FloatingToolbar(QWidget):
 
     def _position_near(self, cursor_position: QPoint) -> QPoint:
         """Return a toolbar origin that stays inside the cursor's screen."""
-        screen = QGuiApplication.screenAt(cursor_position) or QGuiApplication.primaryScreen()
-        if screen is None:
-            return cursor_position + QPoint(self._OFFSET, self._OFFSET)
-
-        available = screen.availableGeometry()
+        available = available_geometry(cursor_position)
         x = cursor_position.x() + self._OFFSET
         y = cursor_position.y() + self._OFFSET
 
@@ -333,6 +332,4 @@ class FloatingToolbar(QWidget):
         if y + self.height() > available.bottom():
             y = cursor_position.y() - self.height() - self._OFFSET
 
-        x = max(available.left(), min(x, available.right() - self.width() + 1))
-        y = max(available.top(), min(y, available.bottom() - self.height() + 1))
-        return QPoint(x, y)
+        return bounded_position(QPoint(x, y), self.size(), available)

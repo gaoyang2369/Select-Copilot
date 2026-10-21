@@ -8,6 +8,8 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QTextCursor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -90,4 +92,40 @@ class ChatWindowTests(unittest.TestCase):
         window = ChatWindow("context", FakeLLMService())
         window._append_message("AI", "<b>literal markup</b>")
         self.assertIn("<b>literal markup</b>", window._messages.toPlainText())
+        window.close()
+
+    def test_enter_adds_a_line_and_control_enter_sends(self) -> None:
+        service = FakeLLMService()
+        window = ChatWindow("context", service)
+        window.show()
+        self.assertFalse(window._send_button.isEnabled())
+        window._input.setPlainText("question")
+        cursor = window._input.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        window._input.setTextCursor(cursor)
+        QTest.keyClick(window._input, Qt.Key.Key_Return)
+        self.assertEqual(window._input.toPlainText(), "question\n")
+        self.assertIsNone(window._worker)
+        QTest.keyClick(window._input, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+        deadline = time.monotonic() + 2
+        while window._worker is not None and time.monotonic() < deadline:
+            self.application.processEvents()
+            QTest.qWait(10)
+        self.assertEqual(len(service.requests), 1)
+        self.assertIn("AI:\nreply 1", window._messages.toPlainText())
+        self.assertFalse(window._send_button.isEnabled())
+        window.close()
+
+    def test_context_collapse_keeps_selection_and_gives_space_to_messages(self) -> None:
+        window = ChatWindow("selected text", FakeLLMService())
+        window.show()
+        self.application.processEvents()
+        height = window._messages.height()
+        window._context_toggle.setChecked(False)
+        self.application.processEvents()
+        self.assertFalse(window._context.isVisible())
+        self.assertGreater(window._messages.height(), height)
+        self.assertEqual(window._context.toPlainText(), "selected text")
+        window._context_toggle.setChecked(True)
+        self.assertTrue(window._context.isVisible())
         window.close()
