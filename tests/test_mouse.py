@@ -5,7 +5,9 @@ from ctypes import wintypes
 import unittest
 from unittest.mock import Mock
 
-from core.mouse import Drag, DragDetector, MouseData, MouseSelectionListener, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE
+from core.mouse import (Drag, DragDetector, MouseData, MouseSelectionListener,
+                        KeyboardData, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+                        WM_KEYDOWN, WM_KEYUP)
 
 
 class DragDetectorTests(unittest.TestCase):
@@ -95,6 +97,7 @@ class MouseHookTests(unittest.TestCase):
         self.listener.bounds = Mock(return_value=(0, 0, 100, 100))
         self.api.GetAncestor.return_value = 10
         self.api.WindowFromPoint.return_value = 42
+        self.api.GetAsyncKeyState.return_value = 0
 
     def feed(self, event, x, flags=0, time_ms=0):
         data = MouseData(pt=wintypes.POINT(x, 10), flags=flags, time=time_ms)
@@ -106,7 +109,7 @@ class MouseHookTests(unittest.TestCase):
         self.assertEqual(self.feed(WM_LBUTTONDOWN, 10), 123)
         self.assertEqual(self.feed(WM_MOUSEMOVE, 100), 123)
         self.assertEqual(self.feed(WM_LBUTTONUP, 100), 123)
-        self.assertEqual(candidates, [Drag(1, 10, (0, 0, 100, 100))])
+        self.assertEqual(candidates, [Drag(1, 10, (0, 0, 100, 100), (100, 10))])
         self.assertEqual(self.api.CallNextHookEx.call_count, 3)
 
     def test_hook_emits_one_candidate_for_double_click(self):
@@ -116,7 +119,7 @@ class MouseHookTests(unittest.TestCase):
             self.assertEqual(self.feed(event, 10, time_ms=stamp), 123)
         self.assertFalse(candidates)
         self.assertEqual(self.feed(WM_LBUTTONUP, 10, time_ms=220), 123)
-        self.assertEqual(candidates, [Drag(2, 10, (0, 0, 100, 100))])
+        self.assertEqual(candidates, [Drag(2, 10, (0, 0, 100, 100), (10, 10))])
         self.assertEqual(self.api.CallNextHookEx.call_count, 4)
 
     def test_double_click_across_controls_or_own_window_is_ignored(self):
@@ -170,3 +173,70 @@ class MouseHookTests(unittest.TestCase):
         self.api.GetAsyncKeyState.return_value = 0
         self.listener.foreground.return_value = 20
         self.assertFalse(self.listener.can_capture(10))
+
+    def test_shift_does_not_prevent_uia_but_prevents_copy(self):
+        self.api.GetAsyncKeyState.side_effect = lambda key: 0x8000 if key == 0x10 else 0
+        self.assertTrue(self.listener.can_capture(10))
+        self.assertFalse(self.listener.can_copy(10))
+
+    def test_drag_can_start_in_an_inactive_window(self):
+        candidates = []
+        self.listener.dragged.connect(candidates.append)
+        self.listener.foreground.return_value = 99
+        self.feed(WM_LBUTTONDOWN, 10)
+        self.listener.foreground.return_value = 10
+        self.feed(WM_LBUTTONUP, 100)
+        self.assertEqual(candidates[0].window, 10)
+
+    def test_shift_click_and_short_drag_emit_candidates(self):
+        candidates = []
+        self.listener.dragged.connect(candidates.append)
+        self.api.GetAsyncKeyState.side_effect = lambda key: 0x8000 if key == 0x10 else 0
+        self.feed(WM_LBUTTONDOWN, 10)
+        self.feed(WM_LBUTTONUP, 10)
+        self.api.GetAsyncKeyState.return_value = 0
+        self.api.GetAsyncKeyState.side_effect = None
+        self.feed(WM_LBUTTONDOWN, 10)
+        self.feed(WM_LBUTTONUP, 15)
+        self.assertEqual(len(candidates), 2)
+
+    def key(self, event, key, flags=0):
+        data = KeyboardData(vkCode=key, flags=flags)
+        return self.listener._key_callback(0, event, ctypes.addressof(data))
+
+    def test_keyboard_selection_emits_after_release_and_typing_invalidates_it(self):
+        candidates = []
+        self.listener.dragged.connect(candidates.append)
+        self.key(WM_KEYDOWN, 0xA0)
+        self.key(WM_KEYDOWN, 0x27)
+        self.assertFalse(candidates)
+        self.assertEqual(self.key(WM_KEYUP, 0x27), 123)
+        self.assertEqual(candidates[0].kind, "keyboard")
+        self.key(WM_KEYDOWN, ord("X"))
+        self.assertGreater(self.listener.detector.generation, candidates[0].generation)
+
+    def test_ctrl_a_and_injected_keys(self):
+        candidates = []
+        self.listener.dragged.connect(candidates.append)
+        self.key(WM_KEYDOWN, 0xA2)
+        self.key(WM_KEYDOWN, 0x41)
+        self.key(WM_KEYUP, 0x41)
+        self.assertEqual(len(candidates), 1)
+        generation = self.listener.detector.generation
+        self.key(WM_KEYDOWN, 0x43, flags=0x10)
+        self.assertEqual(self.listener.detector.generation, generation)
+
+    def test_keyboard_selection_does_not_cross_windows(self):
+        candidates = []
+        self.listener.dragged.connect(candidates.append)
+        self.key(WM_KEYDOWN, 0xA0)
+        self.key(WM_KEYDOWN, 0x27)
+        self.listener.foreground.return_value = 99
+        self.key(WM_KEYUP, 0x27)
+        self.assertFalse(candidates)
+
+    def test_triple_click_recaptures_paragraph(self):
+        detector = DragDetector()
+        self.assertFalse(DragDetectorTests.click(detector, 100))
+        self.assertTrue(DragDetectorTests.click(detector, 200))
+        self.assertTrue(DragDetectorTests.click(detector, 300))

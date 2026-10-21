@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLabel,
-    QLineEdit, QVBoxLayout,
+    QApplication, QFrame, QLineEdit, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from config.settings import Settings
@@ -25,7 +25,19 @@ class SettingsDialog(QDialog):
         self.model = QLineEdit()
         self.hotkey = QLineEdit()
         self.hotkey.setPlaceholderText("alt+q")
-        self.auto_select = QCheckBox("拖动或双击选中文字后自动弹出工具栏")
+        self.auto_select = QCheckBox("鼠标或键盘选中文字后自动弹出工具栏")
+        self.clipboard_fallback = QComboBox()
+        for label, value in (("仅按快捷键时允许（推荐）", "manual"),
+                             ("快捷键及指定应用自动划词", "allowlist"), ("禁用模拟复制", "never")):
+            self.clipboard_fallback.addItem(label, value)
+        self.clipboard_apps = QLineEdit()
+        self.clipboard_apps.setPlaceholderText("例如 acrobat.exe，用逗号分隔")
+        self.clipboard_apps.setEnabled(False)
+        self.clipboard_fallback.currentIndexChanged.connect(
+            lambda: self.clipboard_apps.setEnabled(self.clipboard_fallback.currentData() == "allowlist")
+        )
+        self.excluded_apps = QLineEdit()
+        self.excluded_apps.setPlaceholderText("在这些应用内暂停取词，例如 game.exe")
         self.stream = QCheckBox("边生成边显示答案")
         self.thinking = self._thinking_combo()
         self.translation_thinking = self._thinking_combo()
@@ -34,11 +46,13 @@ class SettingsDialog(QDialog):
             ("API 地址", self.base_url), ("API Key（保存在本机）", self.api_key),
             ("模型", self.model), ("全局快捷键", self.hotkey),
             ("自动划词", self.auto_select), ("流式显示", self.stream),
+            ("复制兼容范围", self.clipboard_fallback),
+            ("自动复制兼容应用", self.clipboard_apps), ("暂停取词的应用", self.excluded_apps),
             ("DeepSeek 解释 / Chat 思考", self.thinking),
             ("DeepSeek 翻译思考", self.translation_thinking),
         ):
             form.addRow(label, widget)
-        note = QLabel("设置保存后立即生效；已打开的 Chat 窗口继续使用打开时的模型。")
+        note = QLabel("默认自动划词不模拟复制。终端及常见 IDE 不使用复制兼容；无法取词时，可手动复制后从托盘选择“使用剪贴板文字”。设置保存后立即生效。")
         note.setWordWrap(True)
         self.error = QLabel()
         self.error.setWordWrap(True)
@@ -49,10 +63,24 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addWidget(note)
+        content = QWidget()
+        body = QVBoxLayout(content)
+        body.addLayout(form)
+        body.addWidget(note)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
         layout.addWidget(self.error)
         layout.addWidget(buttons)
+        screen = QApplication.primaryScreen()
+        if screen:
+            available = screen.availableGeometry()
+            self.setMinimumWidth(min(480, available.width() - 40))
+            self.resize(min(560, available.width() - 40), min(560, available.height() - 60))
+        else:
+            self.resize(560, 560)
 
     @staticmethod
     def _thinking_combo() -> QComboBox:
@@ -62,10 +90,11 @@ class SettingsDialog(QDialog):
         return combo
 
     def load(self, settings: Settings) -> None:
-        for name in ("base_url", "api_key", "model", "hotkey"):
+        for name in ("base_url", "api_key", "model", "hotkey", "clipboard_apps", "excluded_apps"):
             getattr(self, name).setText(getattr(settings, name))
         self.auto_select.setChecked(settings.auto_select)
         self.stream.setChecked(settings.stream)
+        self.clipboard_fallback.setCurrentIndex(self.clipboard_fallback.findData(settings.clipboard_fallback))
         for name in ("thinking", "translation_thinking"):
             combo = getattr(self, name)
             combo.setCurrentIndex(combo.findData(getattr(settings, name)))
@@ -77,6 +106,8 @@ class SettingsDialog(QDialog):
             model=self.model.text().strip(), hotkey=self.hotkey.text().strip().lower(),
             auto_select=self.auto_select.isChecked(), stream=self.stream.isChecked(),
             thinking=self.thinking.currentData(), translation_thinking=self.translation_thinking.currentData(),
+            clipboard_fallback=self.clipboard_fallback.currentData(),
+            clipboard_apps=self.clipboard_apps.text().strip(), excluded_apps=self.excluded_apps.text().strip(),
         )
         try:
             settings.validate()

@@ -17,9 +17,10 @@ class DpiLayoutTests(unittest.TestCase):
             from pathlib import Path
             from PySide6.QtCore import QPoint
             from PySide6.QtGui import QFontDatabase
-            from PySide6.QtWidgets import QApplication
+            from PySide6.QtWidgets import QApplication, QDialogButtonBox
             from ui.chat_window import ChatWindow
             from ui.toolbar import FloatingToolbar
+            from ui.settings_dialog import SettingsDialog
             app = QApplication([])
             if not QFontDatabase.families():
                 for name in ("segoeui.ttf", "msyh.ttc"):
@@ -33,13 +34,17 @@ class DpiLayoutTests(unittest.TestCase):
             popup.show_message("A long explanation. " * 500, toolbar)
             chat = ChatWindow("context", object())
             chat.show()
+            settings = SettingsDialog(lambda value: None)
+            settings.show()
             app.processEvents()
-            for window in (toolbar, popup, chat):
+            for window in (toolbar, popup, chat, settings):
                 assert available.contains(window.frameGeometry()), (window.objectName(), window.frameGeometry(), available)
             assert not popup.frameGeometry().intersects(toolbar.frameGeometry())
             assert chat._messages.viewport().height() >= 40
             assert chat.rect().contains(chat._send_button.mapTo(chat, QPoint(0, 0)))
             assert chat._input.height() >= chat.fontMetrics().lineSpacing() * 2
+            save = settings.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Save)
+            assert settings.rect().contains(save.mapTo(settings, save.rect().bottomRight()))
             for button in (toolbar._translate_button, toolbar._tts_button, toolbar._explain_button, toolbar._chat_button, chat._send_button):
                 assert button.width() >= button.fontMetrics().horizontalAdvance(button.text()) + 12
             if chat.height() < 560:
@@ -52,6 +57,7 @@ class DpiLayoutTests(unittest.TestCase):
             toolbar.shutdown()
             toolbar.close()
             chat.close()
+            settings.close()
         ''')
         for scale in ("1", "1.25", "1.5", "2"):
             with self.subTest(scale=scale):

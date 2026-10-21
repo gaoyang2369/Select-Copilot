@@ -16,10 +16,12 @@ from PySide6.QtWidgets import QApplication
 from app import CaptureRequest, CopilotController
 from config.settings import Settings
 from core.mouse import Drag, DragDetector, WM_LBUTTONDOWN, WM_LBUTTONUP
+from core.uia import SelectionResult
 
 
 class FakeMouse(QObject):
     dragged = Signal(object)
+    cancelled = Signal()
 
     def __init__(self):
         super().__init__()
@@ -40,12 +42,24 @@ class FakeMouse(QObject):
     def can_capture(self, window):
         return window == self.window
 
+    def can_copy(self, window):
+        return self.can_capture(window)
+
+    def cursor_position(self):
+        return (50, 50)
+
+    def program_name(self, window):
+        return "source.exe"
+
+    def is_console(self, window):
+        return False
+
     def is_current(self, drag):
         return self.running and drag.generation == self.detector.generation and self.can_capture(drag.window)
 
 
 class FakeHotkey:
-    def __init__(self, callback, hotkey):
+    def __init__(self, callback, hotkey, context=None):
         self.hotkey = hotkey
         self._registered = False
 
@@ -75,7 +89,7 @@ class ControllerTests(unittest.TestCase):
         with patch("app.QSystemTrayIcon.isSystemTrayAvailable", return_value=True):
             self.controller.start()
         self.controller.selection_service = Mock()
-        self.controller.selection_service.get_selected_text.return_value = "selected text"
+        self.controller.selection_service.capture.return_value = SelectionResult("selected", "selected text")
 
     def tearDown(self):
         self.controller.shutdown()
@@ -97,7 +111,7 @@ class ControllerTests(unittest.TestCase):
         c = self.controller
         with patch.object(c.toolbar._translator, "translate") as translate, patch.object(c.toolbar._llm_service, "ask") as ask:
             c._schedule_auto(self.drag())
-            c.selection_service.get_selected_text.assert_not_called()
+            c.selection_service.capture.assert_not_called()
             self.wait_for(lambda: c.toolbar.selected_text == "selected text")
             self.assertTrue(c.toolbar.isVisible())
             translate.assert_not_called()
@@ -108,34 +122,100 @@ class ControllerTests(unittest.TestCase):
         detector = c.mouse.detector
         for event, stamp in ((WM_LBUTTONDOWN, 100), (WM_LBUTTONUP, 120), (WM_LBUTTONDOWN, 200)):
             self.assertFalse(detector.feed(event, 10, 10, time_ms=stamp, target=42))
-        c.selection_service.get_selected_text.assert_not_called()
+        c.selection_service.capture.assert_not_called()
         self.assertTrue(detector.feed(WM_LBUTTONUP, 10, 10, time_ms=220))
         c.mouse.dragged.emit(self.drag())
-        c.selection_service.get_selected_text.assert_not_called()
+        c.selection_service.capture.assert_not_called()
         self.wait_for(lambda: c.toolbar.selected_text == "selected text")
-        c.selection_service.get_selected_text.assert_called_once()
+        c.selection_service.capture.assert_called_once()
 
     def test_pause_cancels_pending_auto_but_keeps_manual_shortcut(self):
         c = self.controller
         c._schedule_auto(self.drag())
         c.toggle_auto(False)
         QTest.qWait(150)
-        c.selection_service.get_selected_text.assert_not_called()
+        c.selection_service.capture.assert_not_called()
         self.assertFalse(c.mouse.running)
         c._capture_manual(10)
         self.wait_for(lambda: c.toolbar.selected_text == "selected text")
+
+    def test_auto_copy_policy_requires_an_explicit_matching_app(self):
+        c = self.controller
+        for mode, apps, expected in (("manual", "source.exe", False),
+                                     ("never", "source.exe", False),
+                                     ("allowlist", "other.exe", False),
+                                     ("allowlist", "SOURCE.exe", True)):
+            with self.subTest(mode=mode, apps=apps):
+                c.settings = replace(c.settings, clipboard_fallback=mode, clipboard_apps=apps)
+                c.selection_service.reset_mock()
+                request = CaptureRequest(10, c._epoch, self.drag())
+                c._read_selection(request)
+                self.assertEqual(c.selection_service.capture.call_args.kwargs["allow_copy"], expected)
+
+    def test_manual_copy_policy_and_console_exclusion(self):
+        c = self.controller
+        request = CaptureRequest(10, c._epoch)
+        c._read_selection(request)
+        self.assertTrue(c.selection_service.capture.call_args.kwargs["allow_copy"])
+        c.settings = replace(c.settings, clipboard_fallback="never")
+        c._read_selection(request)
+        self.assertFalse(c.selection_service.capture.call_args.kwargs["allow_copy"])
+        c.settings = replace(c.settings, clipboard_fallback="manual")
+        c.mouse.is_console = lambda window: True
+        c._read_selection(request)
+        self.assertFalse(c.selection_service.capture.call_args.kwargs["allow_copy"])
+
+    def test_excluded_app_does_not_read_selection(self):
+        c = self.controller
+        c.settings = replace(c.settings, excluded_apps="SOURCE.exe")
+        c._read_selection(CaptureRequest(10, c._epoch, self.drag()))
+        c.selection_service.capture.assert_not_called()
+
+    def test_manual_capture_is_invalidated_by_new_input(self):
+        c = self.controller
+        request = CaptureRequest(10, c._epoch, generation=c.mouse.detector.generation)
+        self.assertTrue(c._valid_request(request))
+        c.mouse.detector.generation += 1
+        self.assertFalse(c._valid_request(request))
+
+    def test_escape_cancels_pending_capture_and_hides_toolbar(self):
+        c = self.controller
+        c.toolbar.show_for_selection("old")
+        c._schedule_auto(self.drag())
+        c.mouse.cancelled.emit()
+        QTest.qWait(120)
+        c.selection_service.capture.assert_not_called()
+        self.assertFalse(c.toolbar.isVisible())
+
+    def test_explicit_clipboard_entry_does_not_read_selection_or_synthesize_keys(self):
+        c = self.controller
+        c.clipboard_service = Mock()
+        c.clipboard_service.read_text.return_value = "manually copied"
+        with patch("app.keyboard.send") as send:
+            c._capture_clipboard()
+            self.wait_for(lambda: c.toolbar.selected_text == "manually copied")
+        send.assert_not_called()
+        c.selection_service.capture.assert_not_called()
+
+    def test_copy_wait_timeout_never_sends_shortcut(self):
+        c = self.controller
+        c._current_request = CaptureRequest(10, c._epoch)
+        c.mouse.can_copy = lambda window: False
+        with patch("app.time.monotonic", side_effect=[0, 1]), patch("app.keyboard.send") as send:
+            self.assertFalse(c._send_copy())
+        send.assert_not_called()
 
     def test_changed_foreground_discards_capture(self):
         c = self.controller
         request = CaptureRequest(10, c._epoch, self.drag())
         c.mouse.window = 20
-        c._deliver_capture("stale", request)
+        c._deliver_capture(SelectionResult("selected", "stale"), request)
         self.assertFalse(c.toolbar.isVisible())
 
     def test_auto_empty_text_does_not_replace_existing_selection(self):
         c = self.controller
         c.toolbar.show_for_selection("previous")
-        c._deliver_capture("", CaptureRequest(10, c._epoch, self.drag()))
+        c._deliver_capture(SelectionResult("empty"), CaptureRequest(10, c._epoch, self.drag()))
         self.assertEqual(c.toolbar.selected_text, "previous")
         self.assertTrue(c.toolbar.isVisible())
 
@@ -143,14 +223,14 @@ class ControllerTests(unittest.TestCase):
         c = self.controller
         started, release = threading.Event(), threading.Event()
         calls = []
-        def capture():
+        def capture(*args, **kwargs):
             calls.append(1)
             if len(calls) == 1:
                 started.set()
                 release.wait(2)
-                return "old result"
-            return "new result"
-        c.selection_service.get_selected_text.side_effect = capture
+                return SelectionResult("selected", "old result")
+            return SelectionResult("selected", "new result")
+        c.selection_service.capture.side_effect = capture
         try:
             c._capture_manual(10)
             self.assertTrue(started.wait(1))

@@ -1,5 +1,7 @@
 # Windows exe 打包与验证
 
+当前取词逻辑与最新验收步骤见 [取词交互优化](Selection-Experience.md)。UIA 类型库在 Analysis 前生成并随 exe 打包；运行依赖明确包含 comtypes 和 pywin32。
+
 本阶段生成 Windows x64 便携版：
 
 - `dist/SelectionCopilot/SelectionCopilot.exe`：双击运行。

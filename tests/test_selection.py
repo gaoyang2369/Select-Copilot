@@ -1,84 +1,66 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from core.clipboard import ClipboardService
 from core.selection import SelectionService
-
-
-class FakeClipboard:
-    def __init__(self, text: str) -> None:
-        self.text = text
-        self.calls = 0
-
-    def get_text_after_copy(self, send_copy) -> str:
-        self.calls += 1
-        send_copy()
-        return self.text
+from core.uia import SelectionResult
 
 
 class SelectionServiceTests(unittest.TestCase):
-    def test_returns_text_from_clipboard_fallback(self) -> None:
-        clipboard = FakeClipboard("Wasserstein distance")
-        copy_calls = 0
+    def setUp(self):
+        self.clipboard = Mock()
+        self.reader = Mock()
+        self.send_copy = Mock()
+        self.service = SelectionService(self.clipboard, self.send_copy, self.reader)
+        self.sleep = patch("core.selection.time.sleep")
+        self.sleep.start()
+        self.addCleanup(self.sleep.stop)
 
-        def send_copy() -> None:
-            nonlocal copy_calls
-            copy_calls += 1
+    def test_uia_selection_never_touches_clipboard(self):
+        self.reader.read.return_value = SelectionResult("selected", "word", (10, 20))
+        result = self.service.capture(1, allow_copy=True, program="source.exe")
+        self.assertEqual(result.text, "word")
+        self.clipboard.get_text_after_copy.assert_not_called()
+        self.send_copy.assert_not_called()
 
-        service = SelectionService(clipboard, send_copy)
+    def test_empty_blocked_errors_and_timeouts_never_copy(self):
+        for status in ("empty", "blocked", "error", "timeout"):
+            with self.subTest(status=status):
+                self.reader.read.return_value = SelectionResult(status)
+                self.assertEqual(self.service.capture(1, allow_copy=True, program="source.exe").status, status)
+                self.clipboard.get_text_after_copy.assert_not_called()
 
-        self.assertEqual(service.get_selected_text(), "Wasserstein distance")
-        self.assertEqual(clipboard.calls, 1)
-        self.assertEqual(copy_calls, 1)
+    def test_unsupported_does_not_copy_by_default_or_in_terminal_hosts(self):
+        self.reader.read.return_value = SelectionResult("unsupported")
+        self.service.capture(1, program="source.exe")
+        for program in ("pwsh.exe", "WindowsTerminal.exe", "code.exe", "idea64.exe", ""):
+            self.service.capture(1, allow_copy=True, program=program)
+        self.clipboard.get_text_after_copy.assert_not_called()
 
-    def test_returns_empty_string_when_clipboard_has_no_selection(self) -> None:
-        service = SelectionService(FakeClipboard(""), lambda: None)
+    def test_explicit_fallback_runs_once_after_read_retries(self):
+        self.reader.read.return_value = SelectionResult("unsupported")
+        self.clipboard.get_text_after_copy.return_value = "copied text"
+        result = self.service.capture(10, allow_copy=True, program="source.exe")
+        self.assertEqual((result.text, result.method), ("copied text", "clipboard"))
+        self.assertEqual(self.reader.read.call_count, 3)
+        self.clipboard.get_text_after_copy.assert_called_once()
 
-        self.assertEqual(service.get_selected_text(), "")
+    def test_late_selection_is_retried_without_copying(self):
+        self.reader.read.side_effect = [SelectionResult("empty"), SelectionResult("selected", "ready")]
+        self.assertEqual(self.service.capture(1).text, "ready")
+        self.clipboard.get_text_after_copy.assert_not_called()
 
+    def test_changed_request_cannot_fall_back_or_return_old_text(self):
+        self.reader.read.return_value = SelectionResult("selected", "old")
+        result = self.service.capture(1, allow_copy=True, program="source.exe",
+                                      is_current=Mock(side_effect=[True, False]))
+        self.assertEqual(result.status, "cancelled")
+        self.clipboard.get_text_after_copy.assert_not_called()
 
-class ClipboardServiceTests(unittest.TestCase):
-    def test_reads_new_text_and_restores_plain_text_clipboard(self) -> None:
-        clipboard_text = "previous text"
-
-        def paste() -> str:
-            return clipboard_text
-
-        def copy(text: str) -> None:
-            nonlocal clipboard_text
-            clipboard_text = text
-
-        def send_copy() -> None:
-            copy("selected text")
-
-        service = ClipboardService()
-        with patch("core.clipboard.pyperclip.paste", paste), patch(
-            "core.clipboard.pyperclip.copy", copy
-        ):
-            self.assertEqual(service.get_text_after_copy(send_copy), "selected text")
-
-        self.assertEqual(clipboard_text, "previous text")
-
-    def test_returns_empty_text_when_copy_does_not_replace_sentinel(self) -> None:
-        clipboard_text = "previous text"
-
-        def paste() -> str:
-            return clipboard_text
-
-        def copy(text: str) -> None:
-            nonlocal clipboard_text
-            clipboard_text = text
-
-        service = ClipboardService(copy_wait_seconds=0)
-        with patch("core.clipboard.pyperclip.paste", paste), patch(
-            "core.clipboard.pyperclip.copy", copy
-        ):
-            self.assertEqual(service.get_text_after_copy(lambda: None), "")
-
-        self.assertEqual(clipboard_text, "previous text")
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_diagnostics_do_not_log_selected_text(self):
+        self.reader.read.return_value = SelectionResult("selected", "private selection")
+        with self.assertLogs("core.selection", level="INFO") as logs:
+            self.service.capture(1, program="source.exe")
+        self.assertNotIn("private selection", " ".join(logs.output))
+        self.assertIn("method=uia", " ".join(logs.output))

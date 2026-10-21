@@ -10,7 +10,8 @@ from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 
 class CopilotTray(QSystemTrayIcon):
-    def __init__(self, open_settings: Callable, toggle_auto: Callable, quit_app: Callable) -> None:
+    def __init__(self, open_settings: Callable, toggle_auto: Callable, quit_app: Callable,
+                 use_clipboard: Callable | None = None) -> None:
         pixmap = QPixmap(64, 64)
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
@@ -28,6 +29,8 @@ class CopilotTray(QSystemTrayIcon):
         self.status_action.setEnabled(False)
         self.menu.addSeparator()
         self.settings_action = self.menu.addAction("设置…", open_settings)
+        if use_clipboard is not None:
+            self.clipboard_action = self.menu.addAction("使用剪贴板文字", use_clipboard)
         self.auto_action = self.menu.addAction("自动划词")
         self.auto_action.setCheckable(True)
         self.auto_action.toggled.connect(toggle_auto)

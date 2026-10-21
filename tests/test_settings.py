@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from config.settings import Settings, SettingsStore
+from config.settings import Settings, SettingsStore, app_names
 from core.hotkey import parse_hotkey
 
 
@@ -52,3 +52,18 @@ class SettingsTests(unittest.TestCase):
 
     def test_credentials_are_not_in_settings_repr(self):
         self.assertNotIn("private-key", repr(Settings(api_key="private-key")))
+
+    def test_selection_preferences_round_trip_and_existing_settings_migrate(self):
+        self.store.path.write_text('{"hotkey":"alt+q"}', encoding="utf-8")
+        self.assertEqual(self.store.load().clipboard_fallback, "manual")
+        settings = Settings(clipboard_fallback="allowlist", clipboard_apps="Acrobat.exe, reader.exe",
+                            excluded_apps="game.exe")
+        self.store.save(settings)
+        self.assertEqual(self.store.load(), settings)
+        self.assertEqual(app_names(" A.exe；b.exe， a.exe "), {"a.exe", "b.exe"})
+
+    def test_invalid_selection_preferences_are_rejected(self):
+        for settings in (Settings(clipboard_fallback="always"), Settings(clipboard_apps="C:\\app.exe"),
+                         Settings(excluded_apps="program")):
+            with self.assertRaises(ValueError):
+                settings.validate()

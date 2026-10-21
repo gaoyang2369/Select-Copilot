@@ -41,8 +41,17 @@ server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 
 def result_text(popup):
-    # QTextBrowser exposes a read-only Text control and the UIA Text pattern.
-    control = popup.child_window(title='结果正文', control_type='Text').wrapper_object()
+    # Qt versions expose QTextBrowser as Text, Document or Edit. Its accessible
+    # name/object id and TextPattern are stable; do not depend on ControlType.
+    controls = [control for control in popup.descendants()
+                if control.element_info.name == '结果正文'
+                or control.element_info.automation_id.endswith('.resultText')]
+    if len(controls) != 1:
+        raise RuntimeError('Result control not found: ' + repr([
+            (control.element_info.control_type, control.element_info.automation_id)
+            for control in popup.descendants()
+        ]))
+    control = controls[0]
     return control.iface_text.DocumentRange.GetText(-1).rstrip('\r\n')
 
 def verify_actions(ui, directory):
@@ -107,7 +116,7 @@ with tempfile.TemporaryDirectory(prefix='selection-copilot-smoke-') as directory
         dialog.wait('visible', timeout=15)
         print('FIRST_RUN_SETTINGS_VISIBLE', flush=True)
         edits = dialog.descendants(control_type='Edit')
-        assert len(edits) == 4, len(edits)
+        assert len(edits) == 6, len(edits)
         assert edits[0].get_value() == '', 'Unexpected embedded endpoint'
         assert edits[2].get_value() == '', 'Unexpected embedded model'
         assert edits[3].get_value() == 'alt+q'
@@ -120,6 +129,7 @@ with tempfile.TemporaryDirectory(prefix='selection-copilot-smoke-') as directory
         saved = json.loads((Path(directory) / 'SelectionCopilot/settings.json').read_text(encoding='utf-8'))
         assert saved['model'] == 'smoke-model'
         assert saved['hotkey'] == 'ctrl+shift+f12'
+        assert saved['clipboard_fallback'] == 'manual'
         print('SETTINGS_SAVED_AND_TRAY_LIFETIME_OK', flush=True)
         verify_actions(ui, directory)
         second = subprocess.run([str(exe)], cwd=directory, env=env, timeout=10)
@@ -134,6 +144,9 @@ with tempfile.TemporaryDirectory(prefix='selection-copilot-smoke-') as directory
         assert 'Selection Copilot stopped.' in text
         assert 'Traceback' not in text and 'ERROR' not in text, text
         assert 'smoke-test-key' not in text
+        assert 'method=uia' in text, 'Packaged app did not capture through UIA'
+        assert 'Copy shortcut sent:' not in text, 'UIA capture unexpectedly injected a copy shortcut'
+        print('EXE_UIA_WITHOUT_COPY_SHORTCUT_OK', flush=True)
         print('GRACEFUL_EXIT_AND_FILE_LOG_OK', flush=True)
         process = subprocess.Popen([str(exe), '--settings'], cwd=directory, env=env, creationflags=subprocess.CREATE_NO_WINDOW)
         ui = Application(backend='uia').connect(process=process.pid, timeout=15)

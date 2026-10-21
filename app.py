@@ -5,17 +5,19 @@ import logging
 import signal
 import sys
 import threading
+import time
 from dataclasses import dataclass, replace
 
 import keyboard
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
-from config.settings import Settings, SettingsStore
+from config.settings import Settings, SettingsStore, app_names
 from core.clipboard import ClipboardService
 from core.hotkey import GlobalHotkey
 from core.mouse import Drag, MouseSelectionListener
 from core.selection import SelectionService
+from core.uia import SelectionResult
 from core.runtime import SingleInstance, configure_logging
 from services.llm import LLMService
 from services.translator import Translator
@@ -31,11 +33,14 @@ class CaptureRequest:
     window: int
     epoch: int
     drag: Drag | None = None
+    generation: int | None = None
+    position: tuple[int, int] | None = None
+    source: str = "hotkey"
 
 
 class CopilotController(QObject):
     manual_requested = Signal(object)
-    capture_completed = Signal(str, object)
+    capture_completed = Signal(object, object)
 
     def __init__(self, application: QApplication, store: SettingsStore | None = None) -> None:
         super().__init__(application)
@@ -54,9 +59,9 @@ class CopilotController(QObject):
         self.toolbar = FloatingToolbar()
         self.toolbar.set_services(*self._services(self.settings))
         self.mouse = MouseSelectionListener()
-        self.hotkey = GlobalHotkey(lambda: self.manual_requested.emit(self.mouse.foreground()), self.settings.hotkey)
+        self.hotkey = GlobalHotkey(self.manual_requested.emit, self.settings.hotkey, context=self.mouse.foreground)
         self.dialog = SettingsDialog(self.apply_settings)
-        self.tray = CopilotTray(self.open_settings, self.toggle_auto, application.quit)
+        self.tray = CopilotTray(self.open_settings, self.toggle_auto, application.quit, self._capture_clipboard)
         self._stopping = threading.Event()
         self._epoch = 0
         self._worker: threading.Thread | None = None
@@ -64,10 +69,12 @@ class CopilotController(QObject):
         self._pending_drag: Drag | None = None
         self._auto_timer = QTimer(self)
         self._auto_timer.setSingleShot(True)
-        self._auto_timer.setInterval(100)
+        self._auto_timer.setInterval(80)
         self._auto_timer.timeout.connect(self._capture_auto)
-        self.selection_service = SelectionService(ClipboardService(), self._send_copy)
+        self.clipboard_service = ClipboardService()
+        self.selection_service = SelectionService(self.clipboard_service, self._send_copy)
         self.mouse.dragged.connect(self._schedule_auto)
+        self.mouse.cancelled.connect(self._cancel_capture)
         self.manual_requested.connect(self._capture_manual)
         self.capture_completed.connect(self._deliver_capture)
 
@@ -153,6 +160,11 @@ class CopilotController(QObject):
         self._pending_drag = None
         self._auto_timer.stop()
 
+    @Slot()
+    def _cancel_capture(self) -> None:
+        self._invalidate_capture()
+        self.toolbar.hide()
+
     @Slot(object)
     def _schedule_auto(self, drag: Drag) -> None:
         if not self.settings.auto_select or not self.mouse.is_current(drag) or self._stopping.is_set():
@@ -166,22 +178,33 @@ class CopilotController(QObject):
         drag = self._pending_drag
         self._pending_drag = None
         if drag is not None:
-            self._start_capture(CaptureRequest(drag.window, self._epoch, drag))
+            self._start_capture(CaptureRequest(drag.window, self._epoch, drag, source=drag.kind))
 
     @Slot(object)
     def _capture_manual(self, window: int) -> None:
         self._invalidate_capture()
-        self._start_capture(CaptureRequest(window, self._epoch))
+        generation = self.mouse.detector.generation if self.mouse.running else None
+        self._start_capture(CaptureRequest(window, self._epoch, generation=generation,
+                                           position=self.mouse.cursor_position()))
+
+    @Slot()
+    def _capture_clipboard(self) -> None:
+        self._invalidate_capture()
+        self._start_capture(CaptureRequest(0, self._epoch, source="clipboard"))
 
     def _valid_request(self, request: CaptureRequest) -> bool:
         if self._stopping.is_set() or request.epoch != self._epoch:
             return False
+        if request.source == "clipboard":
+            return True  # The tray menu temporarily owns foreground focus.
         if request.drag is not None:
             return self.settings.auto_select and self.mouse.is_current(request.drag)
-        return self.mouse.can_capture(request.window)
+        return (self.mouse.can_capture(request.window) and
+                (request.generation is None or request.generation == self.mouse.detector.generation))
 
     def _start_capture(self, request: CaptureRequest) -> None:
         if not self._valid_request(request):
+            logger.debug("Capture filtered: source=%s stale_or_inactive", request.source)
             return
         if self._worker is not None and self._worker.is_alive():
             QTimer.singleShot(25, lambda: self._start_capture(request))
@@ -190,29 +213,58 @@ class CopilotController(QObject):
         self._worker = threading.Thread(target=self._read_selection, args=(request,), daemon=True)
         self._worker.start()
 
-    def _send_copy(self) -> None:
-        if self._current_request is None or not self._valid_request(self._current_request):
-            raise RuntimeError("Selection changed before copying")
+    def _send_copy(self) -> bool:
+        request = self._current_request
+        if request is None:
+            return False
+        deadline = time.monotonic() + 0.6
+        while self._valid_request(request) and not self.mouse.can_copy(request.window):
+            if time.monotonic() >= deadline or self._stopping.wait(0.01):
+                logger.info("Copy cancelled: keys are still held")
+                return False
+        if not self._valid_request(request):
+            return False
         keyboard.send("ctrl+c")
+        logger.info("Copy shortcut sent: source=%s", request.source)
+        return True
 
     def _read_selection(self, request: CaptureRequest) -> None:
         try:
             if self._valid_request(request):
-                text = self.selection_service.get_selected_text()
-                self.capture_completed.emit(text, request)
+                if request.source == "clipboard":
+                    text = self.clipboard_service.read_text()
+                    result = SelectionResult("selected" if text.strip() else "empty", text, method="clipboard")
+                else:
+                    program = self.mouse.program_name(request.window)
+                    if program in app_names(self.settings.excluded_apps):
+                        logger.info("Capture filtered: app=%s excluded", program)
+                        result = SelectionResult("blocked")
+                    else:
+                        manual = request.drag is None
+                        allow_copy = (self.settings.clipboard_fallback != "never" and
+                                      (manual or (self.settings.clipboard_fallback == "allowlist" and
+                                                  program in app_names(self.settings.clipboard_apps))))
+                        result = self.selection_service.capture(
+                            request.window, position=request.drag.position if request.drag else None,
+                            program=program, allow_copy=allow_copy and not self.mouse.is_console(request.window),
+                            is_current=lambda: self._valid_request(request),
+                        )
+                self.capture_completed.emit(result, request)
         except Exception:
             logger.exception("Selection capture failed")
 
-    @Slot(str, object)
-    def _deliver_capture(self, text: str, request: CaptureRequest) -> None:
+    @Slot(object, object)
+    def _deliver_capture(self, result: SelectionResult, request: CaptureRequest) -> None:
         if not self._valid_request(request):
             return
-        if text.strip():
-            logger.info("Selected text captured (%s characters, %s).", len(text), "mouse" if request.drag else "hotkey")
-            self.toolbar.show_for_selection(text)
+        if result.status == "selected" and result.text.strip():
+            logger.info("Selected text captured (%s characters, %s).", len(result.text), request.source)
+            position = result.position or (request.drag.position if request.drag else request.position)
+            self.toolbar.show_for_selection(result.text, position)
         elif request.drag is None:
-            logger.warning("No text captured. Select copyable text in the foreground app and retry.")
+            logger.info("No text captured: %s", result.status)
             self.toolbar.hide_for_missing_selection()
+            self.tray.showMessage("未读取到选中文字", "请确认已选中文字；也可手动复制后，从托盘选择“使用剪贴板文字”。", msecs=2500)
 
     def shutdown(self) -> None:
         if self._stopping.is_set():

@@ -100,6 +100,24 @@ class GlobalHotkeyTests(unittest.TestCase):
             self.hotkey._run_after_hotkey_release()
         self.assertIn('copy failed', '\n'.join(logs.output))
 
+    def test_source_context_is_snapshotted_before_waiting_for_release(self) -> None:
+        current = [10]
+        self.hotkey._context = lambda: current[0]
+        started, release = threading.Event(), threading.Event()
+        def wait(context):
+            started.set()
+            release.wait(1)
+            self.callback(context)
+        self.hotkey._run_after_hotkey_release = wait
+        try:
+            self.hotkey._schedule_callback()
+            self.assertTrue(started.wait(1))
+            current[0] = 20
+        finally:
+            release.set()
+            self.hotkey._worker.join(1)
+        self.callback.assert_called_once_with(10)
+
     def test_conflicting_reconfiguration_preserves_old_registration(self) -> None:
         self.hotkey._registered = True
         self.api.RegisterHotKey.return_value = False

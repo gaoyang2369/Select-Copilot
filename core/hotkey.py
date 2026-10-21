@@ -47,9 +47,11 @@ def parse_hotkey(value: str) -> tuple[int, int]:
 class GlobalHotkey(QAbstractNativeEventFilter):
     """Keep the native event handler short; capture text in one background thread."""
 
-    def __init__(self, callback: Callable[[], None], hotkey: str = HOTKEY) -> None:
+    def __init__(self, callback: Callable[..., None], hotkey: str = HOTKEY,
+                 context: Callable[[], object] | None = None) -> None:
         super().__init__()
         self._callback = callback
+        self._context = context
         self.hotkey = hotkey
         self._modifiers, self._key = parse_hotkey(hotkey)
         self._hotkey_id = _HOTKEY_ID
@@ -110,10 +112,12 @@ class GlobalHotkey(QAbstractNativeEventFilter):
         if self._stopping.is_set() or (self._worker is not None and self._worker.is_alive()):
             return
         logger.info("Hotkey received; waiting for keys to be released.")
-        self._worker = threading.Thread(target=self._run_after_hotkey_release, daemon=True)
+        # Snapshot the source before waiting: releasing Alt may activate another app.
+        context = self._context() if self._context is not None else None
+        self._worker = threading.Thread(target=self._run_after_hotkey_release, args=(context,), daemon=True)
         self._worker.start()
 
-    def _run_after_hotkey_release(self) -> None:
+    def _run_after_hotkey_release(self, context: object = None) -> None:
         """Never send Ctrl+C with held modifiers, including after a release timeout."""
         try:
             deadline = time.monotonic() + 2.0
@@ -121,7 +125,10 @@ class GlobalHotkey(QAbstractNativeEventFilter):
                 keys = (*_RELEASE_KEYS, self._key) if self._key not in _RELEASE_KEYS else _RELEASE_KEYS
                 if not any(self._user32.GetAsyncKeyState(key) & 0x8000 for key in keys):
                     if not self._stopping.is_set():
-                        self._callback()
+                        if self._context is None:
+                            self._callback()
+                        else:
+                            self._callback(context)
                     return
                 if time.monotonic() >= deadline:
                     logger.warning("Selection cancelled: release all shortcut keys and try again.")

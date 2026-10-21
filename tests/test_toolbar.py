@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import os
+import ctypes
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import QPoint, QRect
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from ui.toolbar import FloatingToolbar
+from ui.toolbar import FloatingToolbar, MonitorInfo, native_screen_point
 
 
 class FakeTranslator:
@@ -63,6 +64,29 @@ class FloatingToolbarTests(unittest.TestCase):
 
         self.assertTrue(self.toolbar.isVisible())
         self.assertEqual(self.toolbar.selected_text, "Wasserstein distance")
+
+    def test_selection_anchor_is_used_instead_of_later_cursor_position(self):
+        anchor = QPoint(100, 100)
+        with patch("ui.toolbar.native_screen_point", return_value=anchor), \
+                patch("ui.toolbar.QCursor.pos", return_value=QPoint(500, 500)):
+            self.toolbar.show_for_selection("word", (150, 150))
+            self.assertEqual(self.toolbar.pos(), self.toolbar._position_near(anchor))
+
+    def test_native_coordinates_on_negative_origin_scaled_monitor(self):
+        api, screen = Mock(), Mock()
+        screen.name.return_value = "DISPLAY2"
+        screen.devicePixelRatio.return_value = 1.5
+        screen.geometry.return_value = QRect(-1280, 0, 1280, 720)
+        def monitor_info(handle, pointer):
+            info = ctypes.cast(pointer, ctypes.POINTER(MonitorInfo)).contents
+            info.device = "DISPLAY2"
+            info.monitor.left = -1920
+            info.monitor.top = 0
+            return 1
+        api.GetMonitorInfoW.side_effect = monitor_info
+        with patch("ui.toolbar.ctypes.WinDLL", return_value=api), \
+                patch("ui.toolbar.QApplication.screens", return_value=[screen]):
+            self.assertEqual(native_screen_point((-1800, 150)), QPoint(-1200, 100))
 
     def test_position_stays_inside_screen_at_bottom_right(self) -> None:
         screen = self.application.primaryScreen().availableGeometry()

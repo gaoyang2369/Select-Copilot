@@ -14,6 +14,11 @@ from config.paths import application_dir, data_dir
 from core.hotkey import HOTKEY, parse_hotkey
 
 
+def app_names(value: str) -> set[str]:
+    normalized = value.replace("；", ",").replace("，", ",").replace(";", ",")
+    return {item.strip().casefold() for item in normalized.split(",") if item.strip()}
+
+
 @dataclass(frozen=True)
 class Settings:
     base_url: str = ""
@@ -24,6 +29,9 @@ class Settings:
     stream: bool = True
     thinking: str = "disabled"
     translation_thinking: str = "disabled"
+    clipboard_fallback: str = "manual"
+    clipboard_apps: str = ""
+    excluded_apps: str = ""
 
     def validate(self) -> None:
         for item in fields(self):
@@ -32,6 +40,11 @@ class Settings:
             if type(value) is not expected:
                 raise ValueError(f"设置 {item.name} 的类型不正确。")
         parse_hotkey(self.hotkey)
+        if self.clipboard_fallback not in ("never", "manual", "allowlist"):
+            raise ValueError("复制兼容范围无效。")
+        for name in app_names(self.clipboard_apps) | app_names(self.excluded_apps):
+            if not name.endswith(".exe") or any(char in name for char in '/\\:*?"<>|'):
+                raise ValueError("应用列表请填写进程文件名（例如 acrobat.exe），用逗号分隔。")
         if self.base_url:
             url = urlsplit(self.base_url)
             if url.scheme not in ("http", "https") or not url.hostname or url.username or url.password or url.query or url.fragment:
@@ -54,6 +67,9 @@ class SettingsStore:
             stream=str(values.get("LLM_STREAM", "true")).lower() != "false",
             thinking=values.get("DEEPSEEK_THINKING", "disabled"),
             translation_thinking=values.get("DEEPSEEK_TRANSLATION_THINKING", "disabled"),
+            clipboard_fallback=values.get("CLIPBOARD_FALLBACK", "manual"),
+            clipboard_apps=values.get("CLIPBOARD_APPS", ""),
+            excluded_apps=values.get("EXCLUDED_APPS", ""),
         )
 
     def load(self) -> Settings:

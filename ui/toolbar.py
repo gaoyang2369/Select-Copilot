@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+from ctypes import wintypes
 
 from PySide6.QtCore import QPoint, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QCursor, QKeyEvent
@@ -16,6 +17,30 @@ from ui.chat_window import ChatWindow
 from ui.theme import apply_theme, available_geometry, bounded_position
 from ui.translation_popup import TranslationPopup
 from ui.workers import AsyncTextWorker
+
+
+class MonitorInfo(ctypes.Structure):
+    _fields_ = [("size", wintypes.DWORD), ("monitor", wintypes.RECT),
+                ("work", wintypes.RECT), ("flags", wintypes.DWORD),
+                ("device", wintypes.WCHAR * 32)]
+
+
+def native_screen_point(position: tuple[int, int]) -> QPoint:
+    """Map UIA/hook physical coordinates to Qt's per-monitor logical coordinates."""
+    api = ctypes.WinDLL("user32")
+    api.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+    api.MonitorFromPoint.restype = wintypes.HANDLE
+    api.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MonitorInfo)]
+    info = MonitorInfo(size=ctypes.sizeof(MonitorInfo))
+    monitor = api.MonitorFromPoint(wintypes.POINT(*position), 2)
+    if api.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        for screen in QApplication.screens():
+            if screen.name() == info.device:
+                ratio = screen.devicePixelRatio()
+                origin = screen.geometry().topLeft()
+                return origin + QPoint(round((position[0] - info.monitor.left) / ratio),
+                                       round((position[1] - info.monitor.top) / ratio))
+    return QCursor.pos()
 
 
 class TTSWorker(QThread):
@@ -102,8 +127,7 @@ class FloatingToolbar(QFrame):
         self._chat_button.clicked.connect(self._open_chat)
         layout.addWidget(self._chat_button)
 
-    @Slot(str)
-    def show_for_selection(self, selected_text: str) -> None:
+    def show_for_selection(self, selected_text: str, position: tuple[int, int] | None = None) -> None:
         """Update the selected text and show the toolbar near the cursor."""
         if not selected_text:
             self.hide_for_missing_selection()
@@ -113,7 +137,7 @@ class FloatingToolbar(QFrame):
         self._result_worker = None
         self._translation_popup.hide()
         self.adjustSize()
-        self.move(self._position_near(QCursor.pos()))
+        self.move(self._position_near(native_screen_point(position) if position is not None else QCursor.pos()))
         self._left_button_down = bool(self._key_state(0x01) & 0x8000)
         self.show()
         self.raise_()
