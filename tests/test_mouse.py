@@ -109,7 +109,7 @@ class MouseHookTests(unittest.TestCase):
         self.assertEqual(self.feed(WM_LBUTTONDOWN, 10), 123)
         self.assertEqual(self.feed(WM_MOUSEMOVE, 100), 123)
         self.assertEqual(self.feed(WM_LBUTTONUP, 100), 123)
-        self.assertEqual(candidates, [Drag(1, 10, (0, 0, 100, 100), (100, 10))])
+        self.assertEqual(candidates, [Drag(1, 10, (0, 0, 100, 100), (100, 10), origin=(10, 10))])
         self.assertEqual(self.api.CallNextHookEx.call_count, 3)
 
     def test_hook_emits_one_candidate_for_double_click(self):
@@ -119,7 +119,7 @@ class MouseHookTests(unittest.TestCase):
             self.assertEqual(self.feed(event, 10, time_ms=stamp), 123)
         self.assertFalse(candidates)
         self.assertEqual(self.feed(WM_LBUTTONUP, 10, time_ms=220), 123)
-        self.assertEqual(candidates, [Drag(2, 10, (0, 0, 100, 100), (10, 10))])
+        self.assertEqual(candidates, [Drag(2, 10, (0, 0, 100, 100), (10, 10), origin=(10, 10))])
         self.assertEqual(self.api.CallNextHookEx.call_count, 4)
 
     def test_double_click_across_controls_or_own_window_is_ignored(self):

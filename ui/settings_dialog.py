@@ -27,7 +27,8 @@ class SettingsDialog(QDialog):
         self.hotkey.setPlaceholderText("alt+q")
         self.auto_select = QCheckBox("鼠标或键盘选中文字后自动弹出工具栏")
         self.clipboard_fallback = QComboBox()
-        for label, value in (("仅按快捷键时允许（推荐）", "manual"),
+        for label, value in (("快捷键及微信自动兼容（推荐）", "compatible"),
+                             ("仅按快捷键时允许", "manual"),
                              ("快捷键及指定应用自动划词", "allowlist"), ("禁用模拟复制", "never")):
             self.clipboard_fallback.addItem(label, value)
         self.clipboard_apps = QLineEdit()
@@ -52,7 +53,7 @@ class SettingsDialog(QDialog):
             ("DeepSeek 翻译思考", self.translation_thinking),
         ):
             form.addRow(label, widget)
-        note = QLabel("默认自动划词不模拟复制。终端及常见 IDE 不使用复制兼容；无法取词时，可手动复制后从托盘选择“使用剪贴板文字”。设置保存后立即生效。")
+        note = QLabel("默认优先直接读取选区；微信无法读取时允许一次兼容复制。可选择仅快捷键或禁用复制。终端及常见 IDE 不模拟复制。设置保存后立即生效。")
         note.setWordWrap(True)
         self.error = QLabel()
         self.error.setWordWrap(True)

@@ -29,7 +29,8 @@ class FakeClipboard:
         return next((value for value in ids if value > previous), 0)
 
     def GetClipboardFormatName(self, value):
-        return {50000: "HTML Format", 50001: "Opaque private format"}[value]
+        return {50000: "HTML Format", 50001: "Opaque private format",
+                50002: "DataObject", 50003: "Ole Private Data"}[value]
 
     def GetClipboardData(self, format_id):
         return self.data[format_id]
@@ -134,3 +135,32 @@ class ClipboardTests(unittest.TestCase):
         result = self.service._snapshot()[0][1]
         self.assertEqual(result[:4], (20).to_bytes(4, "little"))
         self.assertEqual(result[20:].decode("utf-16-le"), "C:\\first.txt\0C:\\second.txt\0\0")
+
+    def test_ole_transport_is_not_replayed_and_all_real_content_is_preserved(self):
+        self.api.data = {13: "previous", 50000: b"<b>previous</b>",
+                         50002: b"COM transport", 50003: b"OLE bookkeeping"}
+        send = Mock(side_effect=lambda: self.api.write({13: "selected"}))
+        self.assertEqual(self.capture(send), "selected")
+        self.assertEqual(self.api.data, {13: "previous", 50000: b"<b>previous</b>"})
+        send.assert_called_once()
+
+    def test_ole_transport_does_not_allow_unknown_payload_or_missing_payload(self):
+        for data in ({50002: b"transport"}, {50002: b"transport", 50001: b"object data"}):
+            self.api.data = data
+            send = Mock()
+            self.assertEqual(self.capture(send), "")
+            send.assert_not_called()
+            self.assertEqual(self.api.data, data)
+
+    def test_completed_copy_restores_unchanged_clipboard_even_when_selection_expires(self):
+        current = [True]
+        original_get = self.api.GetClipboardData
+        def get_data(format_id):
+            value = original_get(format_id)
+            if value == "selected":
+                self.api.after_close = lambda: current.__setitem__(0, False)
+            return value
+        self.api.GetClipboardData = get_data
+        self.assertEqual(self.capture(lambda: self.api.write({13: "selected"}),
+                                      is_current=lambda: current[0]), "selected")
+        self.assertEqual(self.api.data, {13: "previous"})

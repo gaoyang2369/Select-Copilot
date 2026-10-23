@@ -29,7 +29,7 @@ class Settings:
     stream: bool = True
     thinking: str = "disabled"
     translation_thinking: str = "disabled"
-    clipboard_fallback: str = "manual"
+    clipboard_fallback: str = "compatible"
     clipboard_apps: str = ""
     excluded_apps: str = ""
 
@@ -40,7 +40,7 @@ class Settings:
             if type(value) is not expected:
                 raise ValueError(f"设置 {item.name} 的类型不正确。")
         parse_hotkey(self.hotkey)
-        if self.clipboard_fallback not in ("never", "manual", "allowlist"):
+        if self.clipboard_fallback not in ("never", "manual", "compatible", "allowlist"):
             raise ValueError("复制兼容范围无效。")
         for name in app_names(self.clipboard_apps) | app_names(self.excluded_apps):
             if not name.endswith(".exe") or any(char in name for char in '/\\:*?"<>|'):
@@ -67,7 +67,7 @@ class SettingsStore:
             stream=str(values.get("LLM_STREAM", "true")).lower() != "false",
             thinking=values.get("DEEPSEEK_THINKING", "disabled"),
             translation_thinking=values.get("DEEPSEEK_TRANSLATION_THINKING", "disabled"),
-            clipboard_fallback=values.get("CLIPBOARD_FALLBACK", "manual"),
+            clipboard_fallback=values.get("CLIPBOARD_FALLBACK", "compatible"),
             clipboard_apps=values.get("CLIPBOARD_APPS", ""),
             excluded_apps=values.get("EXCLUDED_APPS", ""),
         )

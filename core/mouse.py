@@ -38,6 +38,7 @@ class Drag:
     bounds: tuple[int, int, int, int]
     position: tuple[int, int] | None = None
     kind: str = "mouse"
+    origin: tuple[int, int] | None = None
 
 
 class DragDetector:
@@ -233,7 +234,8 @@ class MouseSelectionListener(QObject):
                     if event == WM_LBUTTONDOWN:
                         window = self._user32.GetAncestor(target, 2)
                         self._candidate = (
-                            Drag(self.detector.generation, window, self.bounds(window))
+                            Drag(self.detector.generation, window, self.bounds(window),
+                                 origin=(data.pt.x, data.pt.y))
                             if self.external(window) else None
                         )
                     elif event == WM_LBUTTONUP and self._candidate is not None:

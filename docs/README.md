@@ -15,7 +15,8 @@ Selection Copilot 是一个 Windows 桌面划词助手，支持自动划词、�
 ## 文档导航
 
 - [Windows 使用说明](Windows使用说明.txt)：便携版的运行、配置与日常操作。
-- [取词交互优化](Selection-Experience.md)：UIA 真实选区、复制策略、输入识别及验证方法。
+- [Windows 取词可靠性](Selection-Reliability.md)：当前架构、微信与 PPT 根因、事件与进程隔离、实测和复验方法。
+- [取词交互优化](Selection-Experience.md)：上一阶段的历史记录。
 - [打包与验证](Packaging.md)：构建命令、输出文件与验证方法。
 - [托盘、设置与自动划词](Phase7-8-implementation.md)：功能实现与交互流程。
 - [双击划词与快捷键](Double-click-and-hotkey.md)：相关交互改进。

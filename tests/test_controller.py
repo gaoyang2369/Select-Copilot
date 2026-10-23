@@ -84,7 +84,8 @@ class ControllerTests(unittest.TestCase):
     def setUp(self):
         self.store = Mock()
         self.store.load.return_value = Settings(base_url="https://example.test/v1", api_key="test", model="old")
-        with patch("app.MouseSelectionListener", FakeMouse), patch("app.GlobalHotkey", FakeHotkey), patch("app.CopilotTray"):
+        with patch("app.MouseSelectionListener", FakeMouse), patch("app.GlobalHotkey", FakeHotkey), \
+                patch("app.CopilotTray"), patch("app.ReaderProcess"):
             self.controller = CopilotController(self.application, self.store)
         with patch("app.QSystemTrayIcon.isSystemTrayAvailable", return_value=True):
             self.controller.start()
@@ -164,6 +165,32 @@ class ControllerTests(unittest.TestCase):
         c.mouse.is_console = lambda window: True
         c._read_selection(request)
         self.assertFalse(c.selection_service.capture.call_args.kwargs["allow_copy"])
+
+    def test_compatibility_profile_is_scoped_to_wechat_and_user_gestures(self):
+        c = self.controller
+        c.settings = replace(c.settings, clipboard_fallback="compatible")
+        for program, source, expected in (("weixin.exe", "mouse", True),
+                                           ("wechat.exe", "keyboard", True),
+                                           ("weixin.exe", "uia_event", False),
+                                           ("other.exe", "mouse", False)):
+            c.mouse.program_name = lambda _, name=program: name
+            c._read_selection(CaptureRequest(10, c._epoch, self.drag(), source=source))
+            self.assertEqual(c.selection_service.capture.call_args.kwargs["allow_copy"], expected)
+
+    def test_selection_event_does_not_cancel_active_settling_session(self):
+        c = self.controller
+        c._schedule_auto(self.drag())
+        epoch = c._epoch
+        c._selection_changed(10, time.monotonic())
+        self.assertEqual(c._epoch, epoch)
+
+    def test_repeated_selection_event_does_not_reopen_dismissed_toolbar(self):
+        c = self.controller
+        result = SelectionResult("selected", "same selection")
+        c._deliver_capture(result, CaptureRequest(10, c._epoch, self.drag()))
+        c.toolbar.hide()
+        c._deliver_capture(result, CaptureRequest(10, c._epoch, self.drag(), source="uia_event"))
+        self.assertFalse(c.toolbar.isVisible())
 
     def test_excluded_app_does_not_read_selection(self):
         c = self.controller

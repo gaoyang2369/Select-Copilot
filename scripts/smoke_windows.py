@@ -100,7 +100,7 @@ def verify_actions(ui, directory):
         helper.terminate()
         helper.wait(timeout=5)
 
-exe = ROOT / 'dist/SelectionCopilot/SelectionCopilot.exe'
+exe = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / 'dist/SelectionCopilot/SelectionCopilot.exe'
 with tempfile.TemporaryDirectory(prefix='selection-copilot-smoke-') as directory:
     env = dict(os.environ)
     for key in ('API_KEY', 'BASE_URL', 'MODEL', 'HOTKEY', 'AUTO_SELECT', 'PYTHONPATH', 'PYTHONHOME', 'QT_PLUGIN_PATH', 'QT_QPA_PLATFORM', 'CONDA_PREFIX'):
@@ -129,7 +129,7 @@ with tempfile.TemporaryDirectory(prefix='selection-copilot-smoke-') as directory
         saved = json.loads((Path(directory) / 'SelectionCopilot/settings.json').read_text(encoding='utf-8'))
         assert saved['model'] == 'smoke-model'
         assert saved['hotkey'] == 'ctrl+shift+f12'
-        assert saved['clipboard_fallback'] == 'manual'
+        assert saved['clipboard_fallback'] == 'compatible'
         print('SETTINGS_SAVED_AND_TRAY_LIFETIME_OK', flush=True)
         verify_actions(ui, directory)
         second = subprocess.run([str(exe)], cwd=directory, env=env, timeout=10)

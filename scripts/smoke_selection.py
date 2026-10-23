@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import subprocess
@@ -20,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 from core.clipboard import clipboard
 from core.mouse import MouseSelectionListener
 from core.selection import SelectionService
+from core.reader_process import ReaderProcess
 from core.clipboard import ClipboardService
 from PySide6.QtWidgets import QApplication
 
@@ -81,6 +83,7 @@ def main() -> None:
                                    env=environment, stdout=subprocess.PIPE, text=True,
                                    creationflags=subprocess.CREATE_NO_WINDOW)
         sequence = clipboard.GetClipboardSequenceNumber()
+        isolated = ReaderProcess()
         try:
             with ThreadPoolExecutor(max_workers=1) as worker:
                 for state in ("selected", "empty", "password"):
@@ -100,10 +103,18 @@ def main() -> None:
                         assert result.text == "beta", "UIA returned something other than the selected range"
                     assert clipboard.GetClipboardSequenceNumber() == sequence, "UIA changed the clipboard"
                     print(f"UIA_{state.upper()}_OK (clipboard unchanged)")
+                    isolated_result = worker.submit(isolated.read, source["window"],
+                                                     tuple(source["point"])).result(timeout=8)
+                    assert isolated_result.status == expected, (state, isolated_result)
+                    if state == "selected":
+                        assert isolated_result.text == "beta"
+                    print(f"ISOLATED_UIA_{state.upper()}_OK")
         finally:
+            isolated.close()
             process.terminate()
             process.wait(timeout=5)
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()

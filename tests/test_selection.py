@@ -64,3 +64,28 @@ class SelectionServiceTests(unittest.TestCase):
             self.service.capture(1, program="source.exe")
         self.assertNotIn("private selection", " ".join(logs.output))
         self.assertIn("method=uia", " ".join(logs.output))
+
+    def test_selection_that_settles_after_180ms_is_captured(self):
+        clock = [0.08]
+        self.reader.read.side_effect = lambda *a, **k: (
+            SelectionResult("selected", "late selection") if clock[0] >= 0.18 else SelectionResult("empty"))
+        with patch("core.selection.time.monotonic", side_effect=lambda: clock[0]), \
+                patch("core.selection.time.sleep", side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)):
+            result = self.service.capture(1)
+        self.assertEqual(result.text, "late selection")
+        self.assertGreaterEqual(clock[0], 0.18)
+        self.send_copy.assert_not_called()
+
+    def test_cancel_during_settling_stops_without_copy(self):
+        self.reader.read.return_value = SelectionResult("unsupported")
+        current = [True]
+        with patch("core.selection.time.sleep", side_effect=lambda _: current.__setitem__(0, False)):
+            result = self.service.capture(1, allow_copy=True, program="weixin.exe", is_current=lambda: current[0])
+        self.assertEqual(result.status, "cancelled")
+        self.clipboard.get_text_after_copy.assert_not_called()
+
+    def test_hard_worker_timeout_is_not_retried_or_copied(self):
+        self.reader.read.return_value = SelectionResult("timeout", reason="worker_deadline")
+        self.service.capture(1, allow_copy=True, program="weixin.exe")
+        self.reader.read.assert_called_once()
+        self.clipboard.get_text_after_copy.assert_not_called()

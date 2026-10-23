@@ -18,6 +18,11 @@ logger = logging.getLogger(__name__)
 _ERRORS = (OSError, pywintypes.error, ValueError)
 _MEMORY_FORMATS = {1, 7, 8, 13, 15, 16, 17}  # text, DIB, files, locale, DIBV5
 _NAMED_FORMATS = {"HTML Format", "Rich Text Format", "Rich Text Format Without Objects"}
+# OLE publishes these bookkeeping formats beside the actual transferable data.
+# They contain transport/owner information, not a pasteable payload. Replaying
+# them after ownership changes would resurrect invalid COM references. Materialize
+# all supported content formats instead; unknown *content* still prevents copying.
+_OLE_TRANSPORT_FORMATS = {"DataObject", "Ole Private Data"}
 
 
 class ClipboardUnavailable(ValueError):
@@ -48,12 +53,19 @@ class ClipboardService:
     @staticmethod
     def _snapshot() -> list[tuple[int, str | bytes]]:
         formats = []
+        has_transport = False
         format_id = 0
         while format_id := clipboard.EnumClipboardFormats(format_id):
             if format_id not in _MEMORY_FORMATS:
-                if format_id < 0xC000 or clipboard.GetClipboardFormatName(format_id) not in _NAMED_FORMATS:
+                name = clipboard.GetClipboardFormatName(format_id) if format_id >= 0xC000 else ""
+                if name in _OLE_TRANSPORT_FORMATS:
+                    has_transport = True
+                    continue
+                if name not in _NAMED_FORMATS:
                     raise ClipboardUnavailable("clipboard_format_unsupported")
             formats.append(format_id)
+        if has_transport and not formats:
+            raise ClipboardUnavailable("clipboard_payload_unavailable")
         saved = []
         size = 0
         for format_id in formats:
@@ -144,13 +156,15 @@ class ClipboardService:
             if captured_sequence is not None:
                 try:
                     with self._open(owner_window):
-                        if (is_current() and clipboard.GetClipboardSequenceNumber() == captured_sequence
+                        # Clipboard ownership is independent of selection freshness.
+                        # A newer request must not strand a completed temporary copy.
+                        if (clipboard.GetClipboardSequenceNumber() == captured_sequence
                                 and clipboard.GetClipboardOwner() == captured_owner):
                             clipboard.EmptyClipboard()
                             for format_id, data in previous:
                                 clipboard.SetClipboardData(format_id, data)
                         else:
-                            logger.info("Clipboard restore skipped: request or clipboard changed")
+                            logger.info("Clipboard restore skipped: clipboard changed")
                 except _ERRORS:
                     logger.warning("Clipboard restoration failed")
             if owner_window:

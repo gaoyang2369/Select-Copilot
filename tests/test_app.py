@@ -33,7 +33,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
                 timer.timeout.connect(lambda: signal.raise_signal(signal.SIGINT))
                 timers.append(timer)
                 timer.start(100)
-            with patch('app.GlobalHotkey') as hotkey, patch('app.FloatingToolbar') as toolbar, patch('app.MouseSelectionListener'), patch('app.CopilotTray') as tray:
+            with patch('app.GlobalHotkey') as hotkey, patch('app.FloatingToolbar') as toolbar, patch('app.MouseSelectionListener'), patch('app.CopilotTray') as tray, patch('app.ReaderProcess'):
                 tray.return_value.icon.return_value = QIcon()
                 hotkey.return_value.start.side_effect = start
                 app.main()

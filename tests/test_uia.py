@@ -41,6 +41,7 @@ class UIASelectionTests(unittest.TestCase):
         self.automation.GetFocusedElement.return_value = self.focus
         self.automation.CompareElements.side_effect = lambda left, right: left is right
         self.automation.RawViewWalker.GetParentElement.side_effect = lambda value: value.parent
+        self.automation.RawViewWalker.GetFirstChildElement.return_value = None
         patcher = patch("core.uia.CreateObject", return_value=self.automation)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -92,7 +93,44 @@ class UIASelectionTests(unittest.TestCase):
     def test_parent_walk_is_bounded(self):
         self.focus.parent = self.focus
         self.assertEqual(self.reader._read(10, None).status, "unsupported")
-        self.assertEqual(self.automation.RawViewWalker.GetParentElement.call_count, 16)
+        self.assertLessEqual(self.automation.RawViewWalker.GetParentElement.call_count, 128)
+
+    def test_deep_tree_is_not_mistaken_for_unsupported(self):
+        self.root.GetCurrentPattern.return_value = pattern_for("deep selection")
+        parent = self.root
+        for _ in range(24):
+            parent = element(parent)
+        self.automation.GetFocusedElement.return_value = parent
+        self.assertEqual(self.reader._read(10, None).text, "deep selection")
+
+    def test_release_over_button_keeps_text_gesture_origin(self):
+        origin = element(self.root, pattern_for("drag selection"))
+        button = element(self.root)
+        button.CurrentControlType = UIA.UIA_ButtonControlTypeId
+        self.automation.ElementFromPoint.side_effect = lambda p: origin if p.x == 10 else button
+        self.assertEqual(self.reader._read(10, (100, 20), (10, 20)).text, "drag selection")
+
+    def test_unrelated_empty_focus_does_not_claim_mouse_target_is_empty(self):
+        self.automation.ElementFromPoint.return_value = element(self.root)
+        self.focus.GetCurrentPattern.return_value = pattern_for("")
+        result = self.reader._read(10, (30, 40))
+        self.assertEqual(result.status, "unsupported")
+        self.assertEqual(result.reason, "target_provider_missing")
+
+    def test_unrelated_focused_selection_is_not_returned_for_mouse_target(self):
+        self.automation.ElementFromPoint.return_value = element(self.root)
+        self.focus.GetCurrentPattern.return_value = pattern_for("old text elsewhere")
+        self.assertEqual(self.reader._read(10, (500, 600)).status, "unsupported")
+
+    def test_provider_in_hit_tested_pane_is_found_without_desktop_search(self):
+        pane = element(self.root)
+        child = element(pane, pattern_for("nested text"))
+        child.CurrentIsOffscreen = False
+        child.CurrentBoundingRectangle = Mock(left=0, top=0, right=200, bottom=200)
+        self.automation.ElementFromPoint.return_value = pane
+        self.automation.RawViewWalker.GetFirstChildElement.side_effect = lambda e: child if e is pane else None
+        self.automation.RawViewWalker.GetNextSiblingElement.return_value = None
+        self.assertEqual(self.reader._read(10, (30, 40)).text, "nested text")
 
     def test_worker_initializes_and_uninitializes_mta_even_on_error(self):
         with patch("core.uia.comtypes.CoInitializeEx") as initialize, \

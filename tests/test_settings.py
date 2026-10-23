@@ -55,7 +55,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_selection_preferences_round_trip_and_existing_settings_migrate(self):
         self.store.path.write_text('{"hotkey":"alt+q"}', encoding="utf-8")
-        self.assertEqual(self.store.load().clipboard_fallback, "manual")
+        self.assertEqual(self.store.load().clipboard_fallback, "compatible")
         settings = Settings(clipboard_fallback="allowlist", clipboard_apps="Acrobat.exe, reader.exe",
                             excluded_apps="game.exe")
         self.store.save(settings)
